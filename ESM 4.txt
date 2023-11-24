@@ -1,0 +1,739 @@
+#########################
+#LOAD PACKAGES AND DATA##
+#########################
+library(mgcv); library(visreg); library(mgcViz); library(DHARMa); library(sp); library(rgdal); library(MASS); library(sjPlot); library(tidyr); library(tidymodels); library(ggpubr); library(emmeans); library(ape); library(lsmeans); library(spaMM); library(ggmap); library(OpenStreetMap); library(gridExtra)
+
+setwd("...")
+isotopedf <- read.delim2("./d15N values.txt")
+vardf <- read.delim2("./nest variables.txt")
+
+
+########################################
+#ADDING METADATA AND PREPARING DATASET##
+########################################
+
+#Function coordinates to UTM
+vardf$x<-as.numeric(vardf$x)
+vardf$y<-as.numeric(vardf$y)
+LongLatToUTM<-function(x,y,zone){
+  xy <- data.frame(ID = 1:length(x), X = x, Y = y)
+  coordinates(xy) <- c("X", "Y")
+  proj4string(xy) <- CRS("+proj=longlat +datum=WGS84")  ## for example
+  res <- spTransform(xy, CRS(paste("+proj=utm +zone=",zone," ellps=WGS84",sep='')))
+  return(as.data.frame(res))
+}
+conv<-LongLatToUTM(vardf$x,vardf$y,31)
+vardf$X<-conv$X
+vardf$Y<-conv$Y
+
+#Euclidean distance matrix 
+distnests<-matrix( rep( 0),ncol=141,nrow = 141) 
+for (i in 1:141) {
+  for(j in 1:141) {
+    distnests[i,j]<- sqrt((vardf$X[i]-vardf$X[j])^2+(vardf$Y[i]-vardf$Y[j])^2)
+    print(distnests[i,j])
+  } 
+}
+
+distnests[distnests==0]<-NaN #replace zero distances on diagonal = distance from nest A to nest A
+
+connectivity<-vector(length=141) #isolation/connectivity metric based on number of nests within a perimeter, here 100m
+for (i in 1:141){
+  connectivity[i]<-length(which(distnests[i,] < 100) )
+  }
+vardf$connectivity<-connectivity
+hist(vardf$connectivity,breaks=10)
+
+dmin<-vector(length=141)#dmin = mininum distance to other nest
+for (i in 1:141){
+  dmin[i]<-min(distnests[i,],na.rm=T)
+}
+
+vardf$connectivity<-connectivity
+vardf$dmin<-dmin
+
+#create empty columns for the nest variables in main dataset
+isotopedf$moisture<-rep(NaN,nrow(isotopedf))
+isotopedf$pH<-rep(NaN,nrow(isotopedf))
+isotopedf$CanOpen<-rep(NaN,nrow(isotopedf))
+isotopedf$surface<-rep(NaN,nrow(isotopedf))
+isotopedf$connectivity<-rep(NaN,nrow(isotopedf))
+isotopedf$dmin<-rep(NaN,nrow(isotopedf))
+
+#put the entries of the nest variables in the main dataset
+for (i in 1:141)
+{
+  isotopedf$moisture[(isotopedf$nest==vardf$nest_id[i])]<-vardf$moisture[i]
+}
+
+for (i in 1:141)
+{
+  isotopedf$pH[(isotopedf$nest==vardf$nest_id[i])]<-vardf$pH[i]
+}
+
+for (i in 1:141)
+{
+  isotopedf$CanOpen[(isotopedf$nest==vardf$nest_id[i])]<-vardf$CanOpen[i]
+}
+
+for (i in 1:141)
+{
+  isotopedf$surface[(isotopedf$nest==vardf$nest_id[i])]<-vardf$surface[i]
+}
+
+
+for (i in 1:141)
+{
+  isotopedf$X[(isotopedf$nest==vardf$nest_id[i])]<-vardf$X[i]
+}
+
+
+for (i in 1:141)
+{
+  isotopedf$Y[(isotopedf$nest==vardf$nest_id[i])]<-vardf$Y[i]
+}
+
+for (i in 1:141)
+{
+  isotopedf$lon[(isotopedf$nest==vardf$nest_id[i])]<-vardf$x[i]
+}
+
+for (i in 1:141)
+{
+  isotopedf$lat[(isotopedf$nest==vardf$nest_id[i])]<-vardf$y[i]
+}
+
+for (i in 1:141)
+{
+  isotopedf$connectivity[(isotopedf$nest==vardf$nest_id[i])]<-vardf$connectivity[i]
+}
+
+for (i in 1:141)
+{
+  isotopedf$dmin[(isotopedf$nest==vardf$nest_id[i])]<-vardf$dmin[i]
+}
+
+#scale the variables
+isotopedf$dmin_ST<-scale(as.numeric(isotopedf$dmin))
+isotopedf$connectivity_ST<-scale(as.numeric(isotopedf$connectivity))
+isotopedf$moisture_ST<-scale(as.numeric(isotopedf$moisture))
+isotopedf$pH_ST<-scale(as.numeric(isotopedf$pH))
+isotopedf$CanOpen_ST<-scale(as.numeric(isotopedf$CanOpen))
+isotopedf$sqrtCanOpen_ST<-scale(sqrt(as.numeric(isotopedf$CanOpen)))
+isotopedf$sqrtsurface_ST<-scale(sqrt(as.numeric(isotopedf$surface)))
+
+
+###################
+#DATA EXPLORATION##
+###################
+
+#in how many nests is Thyreosthenius top predator?
+table(as.numeric(isotopedf$d15N_Thyreosthenius)>as.numeric(isotopedf$d15N_Thiasophila))
+table(as.numeric(isotopedf$d15N_Thyreosthenius)>as.numeric(isotopedf$d15N_Cyphoderus))
+table(as.numeric(isotopedf$d15N_Thyreosthenius)>as.numeric(isotopedf$d15N_Monotoma))
+table(as.numeric(isotopedf$d15N_Thyreosthenius)>as.numeric(isotopedf$d15N_Worker))
+
+#in how many nests does the host have a higher trophic position than the symbionts?
+table(as.numeric(isotopedf$d15N_Worker)>as.numeric(isotopedf$d15N_Cyphoderus))
+table(as.numeric(isotopedf$d15N_Worker)>as.numeric(isotopedf$d15N_Thiasophila))
+table(as.numeric(isotopedf$d15N_Worker)>as.numeric(isotopedf$d15N_Monotoma))
+
+#in how many nests does Monotoma have a higher trophic position than other symbionts?
+table(as.numeric(isotopedf$d15N_Monotoma)>as.numeric(isotopedf$d15N_Cyphoderus))
+table(as.numeric(isotopedf$d15N_Monotoma)>as.numeric(isotopedf$d15N_Thiasophila))
+
+#in how many nests does Cyphoderus have a higher trophic position than other symbionts?
+table(as.numeric(isotopedf$d15N_Cyphoderus)>as.numeric(isotopedf$d15N_Thiasophila))
+
+
+##################
+#EXPLORING GRAPHS#
+##################
+
+#baseline corrected values (d15N organic material nest as baseline)
+isotopedf$d15N_Worker_corr<-as.numeric(isotopedf$d15N_Worker)-as.numeric(isotopedf$d15N_Organicmaterial)
+isotopedf$d15N_Thiasophila_corr<-as.numeric(isotopedf$d15N_Thiasophila)-as.numeric(isotopedf$d15N_Organicmaterial)
+isotopedf$d15N_Monotoma_corr<-as.numeric(isotopedf$d15N_Monotoma)-as.numeric(isotopedf$d15N_Organicmaterial)
+isotopedf$d15N_Cyphoderus_corr<-as.numeric(isotopedf$d15N_Cyphoderus)-as.numeric(isotopedf$d15N_Organicmaterial)
+isotopedf$d15N_Thyreosthenius_corr<-as.numeric(isotopedf$d15N_Thyreosthenius)-as.numeric(isotopedf$d15N_Organicmaterial)
+
+#plot A: box plot d15N~species
+data_long <- gather(isotopedf,type,d15Ncorr,d15N_Worker_corr,d15N_Thiasophila_corr,d15N_Monotoma_corr,d15N_Cyphoderus_corr,d15N_Thyreosthenius_corr, factor_key=TRUE)
+data_long$type <- factor(data_long$type,levels=c("d15N_Worker_corr","d15N_Monotoma_corr","d15N_Cyphoderus_corr","d15N_Thiasophila_corr","d15N_Thyreosthenius_corr"))
+ggplot(data=data_long)+ geom_boxplot(data = data_long,aes(x= type,y =d15Ncorr,colour=type))+ geom_jitter(data = data_long,aes(x= type,y =d15Ncorr,colour=type),width=0.2) +theme_classic()+scale_color_manual(values=c("brown4","cornflowerblue","darkgoldenrod1","red","aquamarine3","black"))+scale_y_continuous(expand = c(0, 0),limits=c(0,12.5))
+
+group_by(data_long, type) %>%
+  summarise(
+    count = n(),
+    mean = mean(d15Ncorr, na.rm = TRUE),
+    sd = sd(d15Ncorr, na.rm = TRUE)
+  )
+
+
+#plot B: variation in baseline corrected trophic position host ant (within and among populations)
+ggplot(data = isotopedf,aes(x= site,y =as.numeric(d15N_Worker_corr),colour=NA))+geom_point()+theme_classic()+scale_color_manual(values=c("brown4","cornflowerblue","darkgoldenrod1","red","aquamarine3","black"))+scale_fill_manual(values=c("brown4","cornflowerblue","darkgoldenrod1","red","aquamarine3","black"))+scale_y_continuous(expand = c(0, 0),limits=c(0,12.5))
+
+#plot C: variation in uncorrected trophic position host ant (within and among populations)
+ggplot(data = isotopedf,aes(x= site,y =as.numeric(d15N_Worker),colour=NA))+geom_point()+theme_classic()+scale_color_manual(values=c("brown4","cornflowerblue","darkgoldenrod1","red","aquamarine3","black"))+scale_fill_manual(values=c("brown4","cornflowerblue","darkgoldenrod1","red","aquamarine3","black"))+scale_y_continuous(expand = c(0, 0),limits=c(0,12.5))
+
+#plot D: d15N symbionts ~ d15N host and per site
+thyrcor<-ggplot(data = isotopedf,aes(x= as.numeric(d15N_Worker_corr),y =as.numeric(d15N_Thyreosthenius_corr),colour=site))+geom_point()+geom_smooth(method = lm) +theme_classic()
+thiascor<-ggplot(data = isotopedf,aes(x= as.numeric(d15N_Worker_corr),y =as.numeric(d15N_Thiasophila_corr),colour=site))+geom_point()+geom_smooth(method = lm) +theme_classic()
+monocor<-ggplot(data = isotopedf,aes(x= as.numeric(d15N_Worker_corr),y =as.numeric(d15N_Monotoma_corr),colour=site))+geom_point()+geom_smooth(method = lm) +theme_classic()
+workercor<-ggplot(data = isotopedf,aes(x= as.numeric(d15N_Worker_corr),y =as.numeric(d15N_Cyphoderus_corr),colour=site))+geom_point()+geom_smooth(method = lm) +theme_classic()
+ggarrange(thyrcor,thiascor,monocor,workercor,common.legend = T)
+
+#plot E: d15N host ~ env predictors and per site
+workercorconn<-ggplot(data = isotopedf,aes(x= as.numeric(connectivity_ST),y =as.numeric(d15N_Worker_corr),colour=site))+geom_point()+geom_smooth(method = lm) +theme_classic()
+workercorsize<-ggplot(data = isotopedf,aes(x= sqrt(as.numeric(surface)),y =as.numeric(d15N_Worker_corr),colour=site))+geom_point()+geom_smooth(method = lm) +theme_classic()
+workercorcanopen<-ggplot(data = isotopedf,aes(x= sqrtCanOpen_ST,y =as.numeric(d15N_Worker_corr),colour=site))+geom_point()+geom_smooth(method = lm) +theme_classic()
+anova(lm(d15N_Worker_corr~site+sqrtCanOpen_ST+site:sqrtCanOpen_ST,isotopedf))
+anova(lm(d15N_Worker_corr~site*sqrtCanOpen_ST,isotopedf))
+ggarrange(workercorconn,workercorsize,workercorcanopen,common.legend = T)
+
+#plot F: d15N symbionts~d15N host
+colnames(isotopedf)
+corselection<-isotopedf[,c(1,3,26:31)]
+data_long <- gather(corselection, symbiont, measurement,d15N_Thiasophila_corr:d15N_Thyreosthenius_corr, factor_key=TRUE)
+data_long<-as.data.frame(data_long)
+data_long$intsymbsite<-(as.factor(paste(data_long$site,data_long$symbiont)))
+data_long$intsymbsite
+data_long$intsymbsite[data_long$intsymbsite=="Poperinge d15N_Monotoma_corr"]<- "Brugge d15N_Monotoma_corr"
+data_long$intsymbsite[data_long$intsymbsite=="Poperinge d15N_Thiasophila_corr"]<- "Brugge d15N_Thiasophila_corr"
+data_long$intsymbsite[data_long$intsymbsite=="Poperinge d15N_Thyreosthenius_corr"]<- "Brugge d15N_Thyreosthenius_corr"
+droplevels(data_long$intsymbsite)
+allcorrworkerdiet<-ggplot(data = data_long,aes(x= as.numeric(d15N_Worker_corr),y =as.numeric(measurement),colour=intsymbsite))+geom_point()+geom_smooth(method = lm,aes(fill=intsymbsite),se=T,alpha=0.1) +theme_classic()+scale_color_manual(values=c("goldenrod4","slategray3","springgreen3","black","goldenrod"))+scale_fill_manual(values=c("goldenrod4","slategray3","springgreen3","black","goldenrod"))+scale_y_continuous(expand = c(0, 0),limits=c(0,12.5),breaks=c(0,2,4,6,8,10,12))+scale_x_continuous(expand = c(0, 0),limits=c(2,9.5))+labs(x = "Δ15N ant host",y="Δ15N symbiont")
+allcorrworkerdiet<-allcorrworkerdiet+coord_obs_pred(ratio=1)
+
+#plot G: d15N symbionts~nest size
+data_long2 <- gather(corselection, symbiont, measurement,d15N_Worker_corr:d15N_Thyreosthenius_corr, factor_key=TRUE)
+data_long2$intsymbsite<-(as.factor(paste(data_long2$site,data_long2$symbiont)))
+data_long2$intsymbsite
+table(data_long2$intsymbsite)
+data_long2$intsymbsite[data_long2$intsymbsite=="Poperinge d15N_Monotoma_corr"]<- "Brugge d15N_Monotoma_corr"
+data_long2$intsymbsite[data_long2$intsymbsite=="Poperinge d15N_Thiasophila_corr"]<- "Brugge d15N_Thiasophila_corr"
+data_long2$intsymbsite[data_long2$intsymbsite=="Poperinge d15N_Thyreosthenius_corr"]<- "Brugge d15N_Thyreosthenius_corr"
+data_long2$intsymbsite[data_long2$intsymbsite=="Poperinge d15N_Worker_corr"]<- "Brugge d15N_Worker_corr"
+droplevels(data_long2$intsymbsite)
+allcorrsize<-ggplot(data = data_long2,aes(x= as.numeric(sqrtsurface_ST),y =as.numeric(measurement),colour=intsymbsite))+geom_point()+geom_smooth(method = lm,aes(fill=intsymbsite),se=T,alpha = 0.15) +theme_classic()+scale_color_manual(values=c("goldenrod4","slategray3","springgreen3","black","red","goldenrod"))+scale_fill_manual(values=c("goldenrod4","slategray3","springgreen3","black","red","goldenrod"))+scale_y_continuous(expand = c(0, 0),limits=c(0,12.5),breaks=c(0,2,4,6,8,10,12))+labs(x = "nest size",y="Δ15N symbiont")
+allcorrsize<-allcorrsize+coord_fixed(ratio = 1/1.801762)
+
+ggarrange(allcorrsize,allcorrworkerdiet,legend=T,nrow=1)
+svg("C:/R/isotope78.svg",width=12.75358legend,height=10.34483)
+ggarrange(allcorrsize,allcorrworkerdiet,legend=T,nrow=1)
+par(family = "sans")
+dev.off()
+
+#plot H, d15N symbionts~nest size + connectivity included in plot
+isotopedf$nests_isolationclass[(isotopedf$connectivity>=5)]<-"well connected" 
+isotopedf$nests_isolationclass[(isotopedf$connectivity<5)]<-"poorly connected"
+ggplot(data=isotopedf) + geom_point(data = isotopedf,aes(x= sqrt(as.numeric(surface)),y =d15N_Thyreosthenius_corr,col=nests_isolationclass))+theme_bw()
+
+
+#############
+#WORKER d15N#
+#############
+
+#A: trophic position ~ predictors
+#################################
+pop<-isotopedf[isotopedf$d15N_Organicmaterial!="NaN",]
+pop$X<-as.numeric(pop$X)
+pop$Y<-as.numeric(pop$Y)
+pop$d15N_Worker<-as.numeric(pop$d15N_Worker)
+pop$d15N_Organicmaterial<-as.numeric(pop$d15N_Organicmaterial)
+pop$d15N_Worker_corr<-as.numeric(pop$d15N_Worker)-as.numeric(pop$d15N_Organicmaterial)
+
+worker.nospat<-gls(d15N_Worker_corr ~ site+sqrtCanOpen_ST+sqrtsurface_ST+moisture_ST+pH_ST+connectivity_ST, data = pop,method="ML")
+
+make_model <- function(data, cor_type) {
+  return(gls(d15N_Worker_corr ~ site+sqrtCanOpen_ST+sqrtsurface_ST+moisture_ST+pH_ST+connectivity_ST, data = data,
+             correlation = cor_type(form = ~X+Y, nugget = TRUE),
+             method = "ML"))
+}
+
+worker.glsExp <- make_model(pop,corExp)
+worker.glsGaus <- make_model(pop,corGaus)
+worker.glsLin <- make_model(pop,corLin)
+worker.glsRatio <- make_model(pop,corRatio)
+worker.glsSpher <- make_model(pop,corSpher)
+
+AIC(worker.nospat, worker.glsExp, worker.glsGaus, worker.glsRatio,worker.glsSpher)
+
+#variograms
+library(nlme)
+Vario1 <- Variogram(worker.nospat, form = ~ X + Y|site,data = pop, nugget = T)
+Vario2 <- Variogram(worker.glsSpher, form = ~ X + Y|site,data = pop, nugget = T,resType = "normalized")
+Vario3 <- Variogram(worker.glsSpher, form = ~ X + Y|site,data = pop, nugget = T)
+ggarrange(plot(Vario1),plot(Vario2),plot(Vario3))
+
+#worker.glsSpher best
+worker.glsSpher <- gls(d15N_Worker_corr ~ site+sqrtCanOpen_ST+sqrtsurface_ST+moisture_ST+pH_ST+dmin_ST, data = pop,
+                     correlation = corSpher(form = ~X+Y|site, nugget = TRUE),
+                     method = "ML")
+stepworker<-stepAIC(worker.glsSpher,rank="AICc")
+anova(summary(stepworker))
+
+
+#B: trophic distance symbionts ~ predictors
+###########################################
+pop$Cyphdiff<-as.numeric(pop$d15N_Worker)-as.numeric(pop$d15N_Cyphoderus)
+pop$Monodiff<-as.numeric(pop$d15N_Worker)-as.numeric(pop$d15N_Monotoma)
+popworkerMonodiff<-pop[pop$Monodiff!="NaN",]
+popworkerCyphdiff<-pop[pop$Cyphdiff!="NaN",]
+
+#1 distance worker - Monotoma
+popworkerMonodiff.glsExp <- gls(Monodiff ~ site+sqrtsurface_ST+moisture_ST+sqrtCanOpen_ST+pH_ST+connectivity_ST, data = popworkerMonodiff,
+                              correlation = corExp(form = ~X+Y, nugget = TRUE),
+                              method = "ML")
+stepAIC(popworkerMonodiff.glsExp,rank="AICc")
+popworkerMonodiff.glsExp <- gls(Monodiff ~ site+sqrtsurface_ST+moisture_ST+sqrtCanOpen_ST+pH_ST, data = popworkerMonodiff,
+                              correlation = corExp(form = ~X+Y, nugget = TRUE),
+                              method = "ML")
+anova(popworkerMonodiff.glsExp)
+plot(allEffects(popworkerMonodiff.glsExp))
+
+#2 distance worker - Cyphoderus
+popworkerCyphdiff.glsExp <- gls(Cyphdiff ~ site+sqrtsurface_ST+moisture_ST+sqrtCanOpen_ST+pH_ST+connectivity_ST, data = popworkerCyphdiff,
+                              correlation = corExp(form = ~X+Y, nugget = TRUE),
+                              method = "ML")
+stepAIC(popworkerCyphdiff.glsExp,rank="AICc")
+popworkerCyphdiff.glsExp <- gls(Cyphdiff ~ site+connectivity_ST, data = popworkerCyphdiff,
+                              correlation = corExp(form = ~X+Y, nugget = TRUE),
+                              method = "ML")
+anova(popworkerCyphdiff.glsExp)
+
+
+#####################
+#####################
+#THYREOSTHENIUS d15N#
+#####################
+
+#A: trophic position ~ predictors
+#################################
+Thyr<-subset(isotopedf,isotopedf$d15N_Thyreosthenius!="NaN")
+popThyr<-Thyr[Thyr$d15N_Organicmaterial!="NaN",]
+popThyr$d15N_Worker<-as.numeric(popThyr$d15N_Worker)
+
+popThyr$d15N_Organicmaterial<-as.numeric(popThyr$d15N_Organicmaterial)
+popThyr$X<-as.numeric(popThyr$X)
+popThyr$Y<-as.numeric(popThyr$Y)
+
+popThyr$Thyrcorr<-as.numeric(popThyr$d15N_Thyreosthenius)-as.numeric(popThyr$d15N_Organicmaterial)
+popThyr$workerdiff<-as.numeric(popThyr$d15N_Thyreosthenius)-as.numeric(popThyr$d15N_Worker)
+popThyr$Thiadiff<-as.numeric(popThyr$d15N_Thyreosthenius)-as.numeric(popThyr$d15N_Thiasophila)
+popThyr$Cyphdiff<-as.numeric(popThyr$d15N_Thyreosthenius)-as.numeric(popThyr$d15N_Cyphoderus)
+popThyr$Monodiff<-as.numeric(popThyr$d15N_Thyreosthenius)-as.numeric(popThyr$d15N_Monotoma)
+popThyr$workercorr<-as.numeric(popThyr$d15N_Worker)-as.numeric(popThyr$d15N_Organicmaterial)
+Thyr.nospat<-gls(Thyrcorr ~workercorr+ site+sqrtCanOpen_ST+sqrtsurface_ST+moisture_ST+pH_ST+dmin_ST, data = popThyr,method="ML")
+
+Thyr.nospat<-gls(Thyrcorr ~workercorr+ site+sqrtCanOpen_ST+sqrtsurface_ST+moisture_ST+pH_ST+dmin_ST, data = popThyr,method="ML")
+rq<-residuals(Thyr.nospat)
+plot(workercorr,rq) #residuals ok
+plot(Thyr.nospat) #residuals ok
+
+make_model <- function(data, cor_type) {
+  return(gls(Thyrcorr ~ workercorr+site+sqrtCanOpen_ST+sqrtsurface_ST+moisture_ST+pH_ST+connectivity_ST, data = data,
+             correlation = cor_type(form = ~X+Y|site, nugget = TRUE),
+             method = "ML"))
+}
+
+Thyr.glsExp <- make_model(popThyr,corExp)
+Thyr.glsGaus <- make_model(popThyr,corGaus)
+Thyr.glsLin <- make_model(popThyr,corLin)
+Thyr.glsRatio <- make_model(popThyr,corRatio)
+Thyr.glsSpher <- make_model(popThyr,corSpher)
+
+AIC(Thyr.nospat, Thyr.glsExp, Thyr.glsGaus, Thyr.glsRatio,Thyr.glsSpher)
+
+#variograms
+library(nlme)
+Vario1 <- Variogram(Thyr.nospat, form = ~ X + Y|site,data = popThyr, nugget = T)
+Vario2 <- Variogram(Thyr.glsSpher, form = ~ X + Y|site,data = popThyr, nugget = T,resType = "normalized")
+Vario3 <- Variogram(Thyr.glsSpher, form = ~ X + Y|site,data = popThyr, nugget = T)
+ggarrange(plot(Vario1),plot(Vario2),plot(Vario3))
+
+#Thyr.nospat bij beste
+Thyr.nospat<-gls(Thyrcorr ~workercorr+ site+sqrtCanOpen_ST+sqrtsurface_ST+moisture_ST+pH_ST+dmin_ST, data = popThyr,method="ML")
+
+stepTb<-stepAIC(Thyr.nospat,rank="AICc")
+anova(summary(stepTb))
+
+#B: trophic distance symbionts ~ predictors
+###########################################
+popThyrMonodiff<-popThyr[popThyr$Monodiff!="NaN",]
+popThyrThiadiff<-popThyr[popThyr$Thiadiff!="NaN",]
+popThyrCyphdiff<-popThyr[popThyr$Cyphdiff!="NaN",]
+popThyrworkerdiff<-popThyr[popThyr$workerdiff!="NaN",]
+
+#1 distance Thyreosthenius - Monotoma
+popThyrMonodiff.nospat <- gls(Monodiff ~ workercorr+site+sqrtsurface_ST+moisture_ST+sqrtCanOpen_ST+pH_ST+connectivity_ST, data = popThyrMonodiff,method = "ML")
+
+make_model <- function(data,cor_type) {
+  return(gls(Monodiff ~ workercorr+site+sqrtCanOpen_ST+sqrtsurface_ST+moisture_ST+pH_ST+connectivity_ST, data = data,
+             correlation = cor_type(form = ~X+Y|site, nugget = TRUE),
+             method = "ML"))
+}
+
+popThyrMonodiff.glsExp <- make_model(popThyrMonodiff,corExp)
+popThyrMonodiff.glsGaus <- make_model(popThyrMonodiff,corGaus)
+popThyrMonodiff.glsLin <- make_model(popThyrMonodiff,corLin)
+popThyrMonodiff.glsRatio <- make_model(popThyrMonodiff,corRatio)
+popThyrMonodiff.glsSpher <- make_model(popThyrMonodiff,corSpher)
+AIC(popThyrMonodiff.nospat,popThyrMonodiff.glsExp, popThyrMonodiff.glsGaus, popThyrMonodiff.glsRatio,popThyrMonodiff.glsSpher)
+
+
+popThyrMonodiff.glsGaus <- gls(Monodiff ~ workercorr+site+sqrtsurface_ST+moisture_ST+sqrtCanOpen_ST+pH_ST+connectivity_ST, data = popThyrMonodiff,
+                               correlation = corGaus(form = ~X+Y|site, nugget = TRUE),
+                               method = "ML")
+stepTM<-stepAIC(popThyrMonodiff.glsGaus,rank="AICc")
+anova(summary(stepTM))
+
+#2 distance Thyreosthenius - Cyphoderus
+popThyrCyphdiff.nospat <- gls(Cyphdiff ~ workercorr+site+sqrtsurface_ST+moisture_ST+sqrtCanOpen_ST+pH_ST+connectivity_ST, data = popThyrCyphdiff,method = "ML")
+
+popThyrCyphdiff.glsExp <- gls(Cyphdiff ~ workercorr+site+sqrtsurface_ST+moisture_ST+sqrtCanOpen_ST+pH_ST+connectivity_ST, data = popThyrCyphdiff,
+                              correlation = corExp(form = ~X+Y|site, nugget = TRUE),
+                              method = "ML")
+popThyrCyphdiff.glsGaus <- gls(Cyphdiff ~ workercorr+site+sqrtsurface_ST+moisture_ST+sqrtCanOpen_ST+pH_ST+connectivity_ST, data = popThyrCyphdiff,
+                               correlation = corGaus(form = ~X+Y|site, nugget = TRUE),
+                               method = "ML")
+popThyrCyphdiff.glsLin <- gls(Cyphdiff ~ workercorr+site+sqrtsurface_ST+moisture_ST+sqrtCanOpen_ST+pH_ST+connectivity_ST, data = popThyrCyphdiff,
+                              correlation = corLin(form = ~X+Y|site, nugget = TRUE),
+                              method = "ML")
+popThyrCyphdiff.glsRatio <- gls(Cyphdiff ~ workercorr+site+sqrtsurface_ST+moisture_ST+sqrtCanOpen_ST+pH_ST+connectivity_ST, data = popThyrCyphdiff,
+                                correlation = corRatio(form = ~X+Y|site, nugget = TRUE),
+                                method = "ML")
+popThyrCyphdiff.glsSpher <- gls(Cyphdiff ~ workercorr+site+sqrtsurface_ST+moisture_ST+sqrtCanOpen_ST+pH_ST+connectivity_ST, data = popThyrCyphdiff,
+                                correlation = corSpher(form = ~X+Y|site, nugget = TRUE),
+                                method = "ML")
+
+AIC(popThyrCyphdiff.nospat, popThyrCyphdiff.glsExp, popThyrCyphdiff.glsGaus, popThyrCyphdiff.glsRatio,popThyrCyphdiff.glsSpher)
+
+stepTCa<-stepAIC(popThyrCyphdiff.nospat,rank="AICc")
+anova(summary(stepTCa))
+
+#3 distance Thyreosthenius - Thiasophila
+popThyrThiadiff.nospat <- gls(Thiadiff ~ workercorr+site+sqrtsurface_ST+moisture_ST+sqrtCanOpen_ST+pH_ST+connectivity_ST, data = popThyrThiadiff,method = "ML")
+
+popThyrThiadiff.glsExp <- gls(Thiadiff ~ workercorr+site+sqrtsurface_ST+moisture_ST+sqrtCanOpen_ST+pH_ST+connectivity_ST, data = popThyrThiadiff,
+                              correlation = corExp(form = ~X+Y|site, nugget = TRUE),
+                              method = "ML")
+popThyrThiadiff.glsGaus <- gls(Thiadiff ~ workercorr+site+sqrtsurface_ST+moisture_ST+sqrtCanOpen_ST+pH_ST+connectivity_ST, data = popThyrThiadiff,
+                              correlation = corGaus(form = ~X+Y|site, nugget = TRUE),
+                              method = "ML")
+popThyrThiadiff.glsLin <- gls(Thiadiff ~ workercorr+site+sqrtsurface_ST+moisture_ST+sqrtCanOpen_ST+pH_ST+connectivity_ST, data = popThyrThiadiff,
+                              correlation = corLin(form = ~X+Y|site, nugget = TRUE),
+                              method = "ML")
+popThyrThiadiff.glsRatio <- gls(Thiadiff ~ workercorr+site+sqrtsurface_ST+moisture_ST+sqrtCanOpen_ST+pH_ST+connectivity_ST, data = popThyrThiadiff,
+                              correlation = corRatio(form = ~X+Y|site, nugget = TRUE),
+                              method = "ML")
+popThyrThiadiff.glsSpher <- gls(Thiadiff ~ workercorr+site+sqrtsurface_ST+moisture_ST+sqrtCanOpen_ST+pH_ST+connectivity_ST, data = popThyrThiadiff,
+                                correlation = corSpher(form = ~X+Y|site, nugget = TRUE),
+                                method = "ML")
+
+AIC(popThyrThiadiff.nospat, popThyrThiadiff.glsExp, popThyrThiadiff.glsGaus, popThyrThiadiff.glsRatio,popThyrThiadiff.glsSpher)
+
+stepTT<-stepAIC(popThyrThiadiff.nospat,rank="AICc")
+anova(summary(stepTT))
+
+#4 distance Thyreosthenius - worker
+popThyrworkerdiff.glsExp <- gls(workerdiff~ site+sqrtsurface_ST+moisture_ST+sqrtCanOpen_ST+pH_ST+connectivity_ST, data = popThyrworkerdiff,
+                                correlation = corExp(form = ~X+Y, nugget = TRUE),
+                                method = "ML")
+stepAIC(popThyrworkerdiff.glsExp,rank="AICc")
+popThyrworkerdiff.glsExp <- gls(workerdiff ~ connectivity_ST, data = popThyrworkerdiff,
+                                correlation = corSp(form = ~X+Y, nugget = TRUE),
+                                method = "ML")
+anova(popThyrworkerdiff.glsExp)
+plot(allEffects(popThyrworkerdiff.glsExp))
+
+
+##################
+#THIASOPHILA d15N#
+##################
+
+#A: trophic position ~ predictors
+#################################
+Thia<-subset(isotopedf,isotopedf$d15N_Thiasophila!="NaN")
+popThia<-Thia[Thia$d15N_Organicmaterial!="NaN",]
+
+popThia$diffN<-as.numeric(popThia$d15N_Thiasophila)-as.numeric(popThia$d15N_Organicmaterial)
+
+popThia$workdiff<-as.numeric(popThia$d15N_Thiasophila)-as.numeric(popThia$d15N_Worker)
+popThia$Cyphdiff<-as.numeric(popThia$d15N_Thiasophila)-as.numeric(popThia$d15N_Cyphoderus)
+popThia$Monodiff<-as.numeric(popThia$d15N_Thiasophila)-as.numeric(popThia$d15N_Monotoma)
+
+popThia$workercorr<-as.numeric(popThia$d15N_Worker)-as.numeric(popThia$d15N_Organicmaterial)
+
+popThia$X<-as.numeric(popThia$X)
+popThia$Y<-as.numeric(popThia$Y)
+
+Thia.nospat<-gls(diffN ~ workercorr+site+sqrtCanOpen_ST+sqrtsurface_ST+moisture_ST+pH_ST+dmin_ST, data = popThia,method="ML")
+
+plot(Thia.nospat) #residuals ok
+plot(nlme:::Variogram(Thia.nospat, form = ~X +   Y, resType = "normalized"),ylim=c(0,2))
+coords = cbind(popThia$X, popThia$Y)
+w = fields:::rdist(coords)
+Moran.I(x = popThia$diffN, w = w)
+
+Thia.glsExp <- gls(diffN ~ workercorr+site+sqrtCanOpen_ST+sqrtsurface_ST+moisture_ST+pH_ST+connectivity_ST, data = popThia,
+                     correlation = corExp(form = ~X+Y, nugget = TRUE),
+                     method = "ML")
+Thia.glsGaus <- gls(diffN ~ workercorr+site+sqrtCanOpen_ST+sqrtsurface_ST+moisture_ST+pH_ST+connectivity_ST, data = popThia,
+                      correlation = corGaus(form = ~X+Y, nugget = TRUE),
+                      method = "ML")
+Thia.glsLin <- gls(diffN ~ workercorr+site+sqrtCanOpen_ST+sqrtsurface_ST+moisture_ST+pH_ST+connectivity_ST, data = popThia,
+                     correlation = corLin(form = ~X+Y, nugget = TRUE),
+                     method = "ML")
+Thia.glsRatio <- gls(diffN ~ workercorr+site+sqrtCanOpen_ST+sqrtsurface_ST+moisture_ST+pH_ST+connectivity_ST, data = popThia,
+                       correlation = corRatio(form = ~X+Y, nugget = TRUE),
+                       method = "ML")
+Thia.glsSpher <- gls(diffN ~ workercorr+site+sqrtCanOpen_ST+sqrtsurface_ST+moisture_ST+pH_ST+connectivity_ST, data = popThia,
+                       correlation = corSpher(form = ~X+Y, nugget = TRUE),
+                       method = "ML")
+
+AIC(Thia.nospat, Thia.glsExp, Thia.glsGaus, Thia.glsRatio,Thia.glsSpher)
+#gls Ratio bij beste
+
+stepTa<-stepAIC(Thia.glsRatio,rank="AICc")
+anova(summary(stepTa))
+
+#B: trophic distance symbionts ~ predictors
+###########################################
+popThiaMonodiff<-popThia[popThia$Monodiff!="NaN",]
+popThiaCyphdiff<-popThia[popThia$Cyphdiff!="NaN",]
+popThiaworkerdiff<-popThia[popThia$workdiff!="NaN",]
+
+#1 distance Thiasophila and Monotoma
+popThiaMonodiff.nospat <- gls(Monodiff ~ workercorr+site+sqrtsurface_ST+moisture_ST+sqrtCanOpen_ST+pH_ST+connectivity_ST, data = popThiaMonodiff,method = "ML")
+
+popThiaMonodiff.glsExp <- gls(Monodiff ~ workercorr+site+sqrtsurface_ST+moisture_ST+sqrtCanOpen_ST+pH_ST+connectivity_ST, data = popThiaMonodiff,
+                              correlation = corExp(form = ~X+Y|site, nugget = TRUE),
+                              method = "ML")
+popThiaMonodiff.glsGaus <- gls(Monodiff ~ workercorr+site+sqrtsurface_ST+moisture_ST+sqrtCanOpen_ST+pH_ST+connectivity_ST, data = popThiaMonodiff,
+                               correlation = corGaus(form = ~X+Y|site, nugget = TRUE),
+                               method = "ML")
+popThiaMonodiff.glsLin <- gls(Monodiff ~ workercorr+site+sqrtsurface_ST+moisture_ST+sqrtCanOpen_ST+pH_ST+connectivity_ST, data = popThiaMonodiff,
+                              correlation = corLin(form = ~X+Y|site, nugget = TRUE),
+                              method = "ML")
+popThiaMonodiff.glsRatio <- gls(Monodiff ~ workercorr+site+sqrtsurface_ST+moisture_ST+sqrtCanOpen_ST+pH_ST+connectivity_ST, data = popThiaMonodiff,
+                                correlation = corRatio(form = ~X+Y|site, nugget = TRUE),
+                                method = "ML")
+popThiaMonodiff.glsSpher <- gls(Monodiff ~ workercorr+site+sqrtsurface_ST+moisture_ST+sqrtCanOpen_ST+pH_ST+connectivity_ST, data = popThiaMonodiff,
+                                correlation = corSpher(form = ~X+Y|site, nugget = TRUE),
+                                method = "ML")
+
+AIC(popThiaMonodiff.nospat, popThiaMonodiff.glsExp, popThiaMonodiff.glsGaus, popThiaMonodiff.glsRatio,popThiaMonodiff.glsSpher)
+
+stepTM<-stepAIC(popThiaMonodiff.glsRatio,rank="AICc")
+anova(summary(stepTM))
+
+#2 trophic distance Thiasophila - Cyphoderus
+popThiaCyphdiff.nospat <- gls(Cyphdiff ~ workercorr+site+sqrtsurface_ST+moisture_ST+sqrtCanOpen_ST+pH_ST+connectivity_ST, data = popThiaCyphdiff,method = "ML")
+
+popThiaCyphdiff.glsExp <- gls(Cyphdiff ~ workercorr+site+sqrtsurface_ST+moisture_ST+sqrtCanOpen_ST+pH_ST+connectivity_ST, data = popThiaCyphdiff,
+                              correlation = corExp(form = ~X+Y|site, nugget = TRUE),
+                              method = "ML")
+popThiaCyphdiff.glsGaus <- gls(Cyphdiff ~ workercorr+site+sqrtsurface_ST+moisture_ST+sqrtCanOpen_ST+pH_ST+connectivity_ST, data = popThiaCyphdiff,
+                               correlation = corGaus(form = ~X+Y|site, nugget = TRUE),
+                               method = "ML")
+popThiaCyphdiff.glsLin <- gls(Cyphdiff ~ workercorr+site+sqrtsurface_ST+moisture_ST+sqrtCanOpen_ST+pH_ST+connectivity_ST, data = popThiaCyphdiff,
+                              correlation = corLin(form = ~X+Y|site, nugget = TRUE),
+                              method = "ML")
+popThiaCyphdiff.glsRatio <- gls(Cyphdiff ~ workercorr+site+sqrtsurface_ST+moisture_ST+sqrtCanOpen_ST+pH_ST+connectivity_ST, data = popThiaCyphdiff,
+                                correlation = corRatio(form = ~X+Y|site, nugget = TRUE),
+                                method = "ML")
+popThiaCyphdiff.glsSpher <- gls(Cyphdiff ~ workercorr+site+sqrtsurface_ST+moisture_ST+sqrtCanOpen_ST+pH_ST+connectivity_ST, data = popThiaCyphdiff,
+                                correlation = corSpher(form = ~X+Y|site, nugget = TRUE),
+                                method = "ML")
+
+AIC(popThiaCyphdiff.nospat, popThiaCyphdiff.glsExp, popThiaCyphdiff.glsGaus, popThiaCyphdiff.glsRatio,popThiaCyphdiff.glsSpher)
+
+stepTC<-stepAIC(popThiaCyphdiff.nospat,rank="AICc")
+anova(summary(stepTC))
+
+#3 trophic distance Thiasophila and worker
+popThiaworkerdiff.glsExp <- gls(workdiff ~ site+sqrtsurface_ST+moisture_ST+sqrtCanOpen_ST+pH_ST+connectivity_ST, data = popThiaworkerdiff,
+                              correlation = corExp(form = ~X+Y, nugget = TRUE),
+                              method = "ML")
+stepAIC(popThiaworkerdiff.glsExp,rank="AICc")
+popThiaworkerdiff.glsExp <- gls(workdiff ~ site+moisture_ST+pH_ST+connectivity_ST, data = popThiaworkerdiff,
+                              correlation = corExp(form = ~X+Y, nugget = TRUE),
+                              method = "ML")
+anova(popThiaworkerdiff.glsExp)
+
+
+#################
+#################
+#CYPHODERUS d15N#
+#################
+
+#A: trophic position ~ predictors
+#################################
+Cyph<-subset(isotopedf,isotopedf$d15N_Cyphoderus!="NaN")
+
+# Apply complete.cases function
+popCyph<-Cyph[Cyph$d15N_Organicmaterial!="NaN",]
+as.numeric(popCyph$d15N_Worker)
+colnames(popThyr)
+
+popCyph$X<-as.numeric(popCyph$X)
+popCyph$Y<-as.numeric(popCyph$Y)
+
+popCyph$workercorr<-as.numeric(popCyph$d15N_Worker)-as.numeric(popCyph$d15N_Organicmaterial)
+
+popCyph$diffN<-as.numeric(popCyph$d15N_Cyphoderus)-as.numeric(popCyph$d15N_Organicmaterial)
+range(popCyph$diffN)
+popCyph$workdiff<-as.numeric(popCyph$d15N_Worker)-as.numeric(popCyph$d15N_Organicmaterial)
+popCyph$Monodiff<-as.numeric(popCyph$d15N_Cyphoderus)-as.numeric(popCyph$d15N_Monotoma)
+
+
+Cyph.nospat<-gls(diffN ~ workercorr+site+sqrtCanOpen_ST+sqrtsurface_ST+moisture_ST+pH_ST+connectivity_ST, data = popCyph,method="ML")
+plot(Cyph.nospat) #residuals ok
+plot(nlme:::Variogram(Cyph.nospat, form = ~X +   Y, resType = "normalized"),ylim=c(0,2))
+coords = cbind(popCyph$X, popCyph$Y)
+w = fields:::rdist(coords)
+Moran.I(x = popCyph$diffN, w = w)
+
+Cyph.glsExp <- gls(diffN ~workercorr+ site+sqrtCanOpen_ST+sqrtsurface_ST+moisture_ST+pH_ST+connectivity_ST, data = popCyph,
+                   correlation = corExp(form = ~X+Y|site, nugget = TRUE),
+                   method = "ML")
+Cyph.glsGaus <- gls(diffN ~ workercorr+site+sqrtCanOpen_ST+sqrtsurface_ST+moisture_ST+pH_ST+connectivity_ST, data = popCyph,
+                    correlation = corGaus(form = ~X+Y|site, nugget = TRUE),
+                    method = "ML")
+Cyph.glsLin <- gls(diffN ~ workercorr+site+sqrtCanOpen_ST+sqrtsurface_ST+moisture_ST+pH_ST+connectivity_ST, data = popCyph,
+                   correlation = corLin(form = ~X+Y|site, nugget = TRUE),
+                   method = "ML")
+Cyph.glsRatio <- gls(diffN ~ workercorr+site+sqrtCanOpen_ST+sqrtsurface_ST+moisture_ST+pH_ST+connectivity_ST, data = popCyph,
+                     correlation = corRatio(form = ~X+Y|site, nugget = TRUE),
+                     method = "ML")
+Cyph.glsSpher <- gls(diffN ~ workercorr+site+sqrtCanOpen_ST+sqrtsurface_ST+moisture_ST+pH_ST+connectivity_ST, data = popCyph,
+                     correlation = corSpher(form = ~X+Y|site, nugget = TRUE),
+                     method = "ML")
+
+AIC(Cyph.nospat, Cyph.glsExp, Cyph.glsGaus, Cyph.glsRatio,Cyph.glsSpher)
+#no spat s bij beste
+stepC<-stepAIC(Cyph.nospat,rank="AICc")
+anova(summary(stepC))
+
+#B: trophic distance symbionts ~ predictors
+###########################################
+
+popCyphMonodiff<-popCyph[popCyph$Monodiff!="NaN",]
+
+#1
+popCyphMonodiff.nospat <- gls(Monodiff ~ workercorr+site+sqrtsurface_ST+moisture_ST+sqrtCanOpen_ST+pH_ST+connectivity_ST, data = popCyphMonodiff,method = "ML")
+
+popCyphMonodiff.glsExp <- gls(Monodiff ~ workercorr+site+sqrtsurface_ST+moisture_ST+sqrtCanOpen_ST+pH_ST+connectivity_ST, data = popCyphMonodiff,
+                              correlation = corExp(form = ~X+Y|site, nugget = TRUE),
+                              method = "ML")
+popCyphMonodiff.glsGaus <- gls(Monodiff ~ workercorr+site+sqrtsurface_ST+moisture_ST+sqrtCanOpen_ST+pH_ST+connectivity_ST, data = popCyphMonodiff,
+                               correlation = corGaus(form = ~X+Y|site, nugget = TRUE),
+                               method = "ML")
+popCyphMonodiff.glsLin <- gls(Monodiff ~ workercorr+site+sqrtsurface_ST+moisture_ST+sqrtCanOpen_ST+pH_ST+connectivity_ST, data = popCyphMonodiff,
+                              correlation = corLin(form = ~X+Y|site, nugget = TRUE),
+                              method = "ML")
+popCyphMonodiff.glsRatio <- gls(Monodiff ~ workercorr+site+sqrtsurface_ST+moisture_ST+sqrtCanOpen_ST+pH_ST+connectivity_ST, data = popCyphMonodiff,
+                                correlation = corRatio(form = ~X+Y|site, nugget = TRUE),
+                                method = "ML")
+popCyphMonodiff.glsSpher <- gls(Monodiff ~ workercorr+site+sqrtsurface_ST+moisture_ST+sqrtCanOpen_ST+pH_ST+connectivity_ST, data = popCyphMonodiff,
+                                correlation = corSpher(form = ~X+Y|site, nugget = TRUE),
+                                method = "ML")
+
+AIC(popCyphMonodiff.nospat, popCyphMonodiff.glsExp, popCyphMonodiff.glsGaus, popCyphMonodiff.glsRatio,popCyphMonodiff.glsSpher)
+stepCM<-stepAIC(popCyphMonodiff.nospat,rank="AICc")
+anova(summary(stepCM))
+
+
+###############
+###############
+#MONOTOMA d15N#
+###############
+
+#A: trophic position ~ predictors
+#################################
+Mono<-subset(isotopedf,isotopedf$d15N_Monotoma!="NaN")
+popMono<-Mono[Mono$d15N_Organicmaterial!="NaN",]
+popMono$diffN<-as.numeric(popMono$d15N_Monotoma)-as.numeric(popMono$d15N_Organicmaterial)
+range(popMono$diffN)
+popMono$diffC<-as.numeric(popMono$d13C_Monotoma)-as.numeric(popMono$d13C_Organicmaterial)
+popMono$workercorr<-as.numeric(popMono$d15N_Worker)-as.numeric(popMono$d15N_Organicmaterial)
+
+Mono.nospat<-gls(diffN ~ workercorr+site+sqrtCanOpen_ST+sqrtsurface_ST+moisture_ST+pH_ST+connectivity_ST, data = popMono,method="ML")
+plot(Mono.nospat) #residuals ok
+plot(nlme:::Variogram(Mono.nospat, form = ~X +   Y, resType = "normalized"),ylim=c(0,2))
+coords = cbind(popMono$X, popMono$Y)
+w = fields:::rdist(coords)
+Moran.I(x = popMono$diffN, w = w)
+
+Mono.glsExp <- gls(diffN ~ workercorr+site+sqrtCanOpen_ST+sqrtsurface_ST+moisture_ST+pH_ST+connectivity_ST, data = popMono,
+                   correlation = corExp(form = ~X+Y|site, nugget = TRUE),
+                   method = "ML")
+Mono.glsGaus <- gls(diffN ~ workercorr+site+sqrtCanOpen_ST+sqrtsurface_ST+moisture_ST+pH_ST+connectivity_ST, data = popMono,
+                    correlation = corGaus(form = ~X+Y|site, nugget = TRUE),
+                    method = "ML")
+Mono.glsLin <- gls(diffN ~ workercorr+site+sqrtCanOpen_ST+sqrtsurface_ST+moisture_ST+pH_ST+connectivity_ST, data = popMono,
+                   correlation = corLin(form = ~X+Y|site, nugget = TRUE),
+                   method = "ML")
+Mono.glsRatio <- gls(diffN ~ workercorr+site+sqrtCanOpen_ST+sqrtsurface_ST+moisture_ST+pH_ST+connectivity_ST, data = popMono,
+                     correlation = corRatio(form = ~X+Y|site, nugget = TRUE),
+                     method = "ML")
+Mono.glsSpher <- gls(diffN ~ workercorr+site+sqrtCanOpen_ST+sqrtsurface_ST+moisture_ST+pH_ST+connectivity_ST, data = popMono,
+                     correlation = corSpher(form = ~X+Y|site, nugget = TRUE),
+                     method = "ML")
+
+AIC(Mono.nospat, Mono.glsExp, Mono.glsGaus, Mono.glsRatio,Mono.glsSpher)
+Vario1 <- Variogram(Mono.nospat, form = ~ X + Y|site,data = popMono, nugget = T)
+Vario2 <- Variogram(Mono.glsRatio, form = ~ X + Y|site,data = popMono, nugget = T,resType = "normalized")
+Vario3 <- Variogram(Mono.glsRatio, form = ~ X + Y|site,data = popMono, nugget = T)
+ggarrange(plot(Vario1),plot(Vario2),plot(Vario3))
+
+
+#Mono.glsratio best
+
+stepM<-stepAIC(Mono.glsRatio,rank="AICc")
+anova(summary(stepM))
+
+
+######
+######
+#MAPS#
+######
+
+library(ggmap)
+library(ggplot2)
+
+isotopedf$symbol[isotopedf$surface==NaN]<-"triangle"
+isotopedf$symbol[isotopedf$surface!=NaN]<-"circle"
+
+# Get map for each location
+MapBrugge1 <- get_map(location = c(3.141, 51.174), source = "google", maptype = "satellite", zoom = 16, scale = "auto")
+MapBrugge2 <- get_map(location = c(3.155, 51.17), source = "google", maptype = "satellite", zoom = 16, scale = "auto")
+MapBrugge3 <- get_map(location = c(3.17, 51.170), source = "google", maptype = "satellite", zoom = 16, scale = "auto")
+MapRoks <- get_map(location = c(3.05, 51.175), source = "google", maptype = "satellite", zoom = 16)
+MapBoe <- get_map(location = c(2.675, 50.795), source = "google", maptype = "satellite", zoom = 16)
+MapWV1 <- get_map(location = c(2.698, 50.886), source = "google", maptype = "satellite", zoom = 16)
+
+# Function to plot the map
+plot_map <- function(map, data, column) {
+  ggmap(map, darken = c(0.5, "white")) +
+    geom_point(data = data, aes(x = lon, y = lat, fill = as.numeric(data[[column]]), pch = symbol), stroke = 0.5, size = 1.2) +
+    scale_shape_manual(values = c(24, 21)) +
+    scale_fill_gradientn(colors = c("yellow", "orange", "firebrick1", "red4", "black")) +
+    theme(legend.position = "none") +
+    theme(axis.text.x = element_blank(), axis.text.y = element_blank()) +
+    xlab("") + ylab("")
+}
+
+# Plot maps, you can replace "surface" by d15N values for example
+MapBruggefull1 <- plot_map(MapBrugge1, isotopedf, "d15N_Worker_corr")
+MapBruggefull2 <- plot_map(MapBrugge2, isotopedf, "d15N_Worker_corr")
+MapBruggefull3 <- plot_map(MapBrugge3, isotopedf, "d15N_Worker_corr")
+MapRoksfull <- plot_map(MapRoks, isotopedf, "d15N_Worker_corr")
+MapBoefull <- plot_map(MapBoe, isotopedf, "d15N_Worker_corr")+theme(legend.position = "right")
+MapWV1full <- plot_map(MapWV1, isotopedf, "d15N_Worker_corr")
+MapWV1fullb <- plot_map(MapWV1, isotopedf, "d15N_Worker")
+grid.arrange(MapWV1full,MapWV1fullb)
+
+
+grid.arrange(MapBruggefull1,MapBruggefull2,MapBruggefull3,MapRoksfull,MapBoefull,MapWV1full)
